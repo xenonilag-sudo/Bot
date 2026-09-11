@@ -151,6 +151,15 @@ def last_word(text: str) -> str:
     return parts[-1]
 
 
+def hide_word(word: str) -> str:
+    if len(word) <= 2:
+        return word
+    
+    visible_chars = max(1, len(word) // 3)
+    hidden_word = word[:visible_chars] + "#" * (len(word) - visible_chars)
+    return hidden_word
+
+
 def now():
     return time.time()
 
@@ -550,7 +559,7 @@ async def bot_play_turn(message, game):
         await message.channel.send(
             f"🏁 Không còn từ hợp lệ để nối với "
             f"`{game['required']}`.\n"
-            f"🎮 Màn này kết thúc."
+            f"🎮 Màn này k��t thúc."
         )
         game["state"] = "WAITING"
         game["last_user"] = None
@@ -577,6 +586,15 @@ async def bot_play_turn(message, game):
 
     await message.channel.send(embed=embed)
     return True
+
+
+async def get_hint_for_wrong(game):
+    valid_moves = await get_valid_moves(game, 3)
+    if valid_moves:
+        hint_word = random.choice(valid_moves)
+        hidden = hide_word(hint_word)
+        return hidden
+    return None
 
 
 @bot.event
@@ -614,9 +632,12 @@ async def on_message(message):
             user_id = str(message.author.id)
             game["wrong_attempts"][user_id] = game["wrong_attempts"].get(user_id, 0) + 1
 
+            hint = await get_hint_for_wrong(game)
+            hint_text = f"\n💡 Gợi ý: `{hint}`" if hint else ""
+
             if game["wrong_attempts"][user_id] == 3:
                 await message.reply(
-                    f"⚠️ Bạn đã nối sai 3 lần. Một lần sai nữa sẽ reset màn chơi."
+                    f"⚠️ Bạn đã nối sai 3 lần. Một lần sai nữa sẽ reset màn chơi.{hint_text}"
                 )
                 return
             elif game["wrong_attempts"][user_id] >= 4:
@@ -634,7 +655,7 @@ async def on_message(message):
             update_player_stats(int(user_id), channel_id, wrong=1)
             await message.reply(
                 f"❌ Không hợp lệ!\n"
-                f"👉 Cần nối bằng **`{game['required']}`**."
+                f"👉 Cần nối bằng **`{game['required']}`**.{hint_text}"
             )
             return
 
@@ -716,9 +737,12 @@ async def on_message(message):
         user_id = str(message.author.id)
         game["wrong_attempts"][user_id] = game["wrong_attempts"].get(user_id, 0) + 1
 
+        hint = await get_hint_for_wrong(game)
+        hint_text = f"\n💡 Gợi ý: `{hint}`" if hint else ""
+
         if game["wrong_attempts"][user_id] == 3:
             await message.reply(
-                f"⚠️ Bạn đã nối sai 3 lần. Một lần sai nữa sẽ reset màn chơi."
+                f"⚠️ Bạn đã nối sai 3 lần. Một lần sai nữa sẽ reset màn chơi.{hint_text}"
             )
             return
         elif game["wrong_attempts"][user_id] >= 4:
@@ -736,7 +760,7 @@ async def on_message(message):
         update_player_stats(int(user_id), channel_id, wrong=1)
         await message.reply(
             f"❌ Không hợp lệ!\n"
-            f"👉 Cần nối bằng **`{required}`**."
+            f"👉 Cần nối bằng **`{required}`**.{hint_text}"
         )
         return
 
