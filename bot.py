@@ -1,3 +1,8 @@
+# =========================================================
+# bot.py
+# Backend chính của bot Nối Từ
+# =========================================================
+
 import os
 import re
 import time
@@ -8,52 +13,111 @@ from typing import Optional
 
 import aiohttp
 import discord
+
 from dotenv import load_dotenv
 from discord.ext import commands
+
+import messages
+
+
+# =========================================================
+# ENV
+# =========================================================
+
+load_dotenv()
+
+TOKEN = os.getenv(
+    "DISCORD_TOKEN"
+)
 
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-load_dotenv()
+API_BASE = (
+    "https://dict.minhqnd.com/api/v1"
+)
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-
-API_BASE = "https://dict.minhqnd.com/api/v1"
 PREFIX = "!"
 
-TIMEOUT = 3 * 60 * 60
+DB_FILE = "game_data.db"
+
+API_TIMEOUT = 10
+
+TIMEOUT = (
+    3 * 60 * 60
+)
+
 SUGGEST_LIMIT = 10
+
 DAILY_HINT_LIMIT = 5
+
 MAX_WRONG_ATTEMPTS = 3
+
 BOT_PLAY_CHANCE = 0.30
 
-DB_FILE = "game_data.db"
-API_TIMEOUT = 10
+# Số xu nhận được khi nối đúng
+COIN_REWARD_CORRECT = 10
 
 
 # =========================================================
-# DISCORD
+# INTENTS
 # =========================================================
 
 intents = discord.Intents.default()
-intents.message_content = True
 
-bot = commands.Bot(
-    command_prefix=PREFIX,
-    intents=intents,
-    help_command=None
-)
+intents.message_content = True
 
 
 # =========================================================
-# GLOBAL STATE
+# BOT CLASS
+# =========================================================
+
+class NoituBot(commands.Bot):
+
+    def __init__(self):
+
+        super().__init__(
+            command_prefix=PREFIX,
+            intents=intents,
+            help_command=None
+        )
+
+    async def setup_hook(self):
+
+        # Load command economy/shop
+        await self.load_extension(
+            "commands_extra"
+        )
+
+    async def close(self):
+
+        global http_session
+
+        if (
+            http_session is not None
+            and not http_session.closed
+        ):
+            await http_session.close()
+
+            http_session = None
+
+        await super().close()
+
+
+bot = NoituBot()
+
+
+# =========================================================
+# GLOBAL
 # =========================================================
 
 games = {}
 
-http_session: Optional[aiohttp.ClientSession] = None
+http_session: Optional[
+    aiohttp.ClientSession
+] = None
 
 
 # =========================================================
@@ -61,14 +125,24 @@ http_session: Optional[aiohttp.ClientSession] = None
 # =========================================================
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
+
+    conn = sqlite3.connect(
+        DB_FILE,
+        timeout=10
+    )
+
     return conn
 
 
 def init_db():
+
     conn = get_db()
+
     cursor = conn.cursor()
+
+    # =====================================================
+    # HINT USAGE
+    # =====================================================
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS hint_usage (
@@ -80,13 +154,22 @@ def init_db():
         )
     """)
 
+    # =====================================================
+    # GAME CHANNELS
+    # =====================================================
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS game_channels (
             channel_id INTEGER PRIMARY KEY,
             game_active INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP
+                DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # =====================================================
+    # PLAYER STATS
+    # =====================================================
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS player_stats (
@@ -99,66 +182,153 @@ def init_db():
         )
     """)
 
+    # =====================================================
+    # ECONOMY
+    # =====================================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economy (
+            user_id INTEGER PRIMARY KEY,
+            balance INTEGER DEFAULT 0
+        )
+    """)
+
+    # =====================================================
+    # INVENTORY
+    # =====================================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS inventory (
+            user_id INTEGER NOT NULL,
+            item TEXT NOT NULL,
+            quantity INTEGER DEFAULT 0,
+            PRIMARY KEY(user_id, item)
+        )
+    """)
+
+    # =====================================================
+    # MUTES
+    # =====================================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS mutes (
+            channel_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            expires_at REAL NOT NULL,
+            PRIMARY KEY(channel_id, user_id)
+        )
+    """)
+
     conn.commit()
+
     conn.close()
 
 
-def get_user_hint_count(user_id: int) -> int:
+# =========================================================
+# HINT DATABASE
+# =========================================================
+
+def get_user_hint_count(
+    user_id: int
+) -> int:
+
     conn = get_db()
 
-    today = time.strftime("%Y-%m-%d")
+    today = time.strftime(
+        "%Y-%m-%d"
+    )
 
     row = conn.execute(
         """
         SELECT count
         FROM hint_usage
-        WHERE user_id = ? AND date = ?
+        WHERE user_id = ?
+          AND date = ?
         """,
-        (user_id, today)
+        (
+            user_id,
+            today
+        )
     ).fetchone()
 
     conn.close()
 
-    return row["count"] if row else 0
+    if row is None:
+        return 0
+
+    return row[0]
 
 
-def increment_user_hint_count(user_id: int):
+def increment_user_hint_count(
+    user_id: int
+):
+
     conn = get_db()
 
-    today = time.strftime("%Y-%m-%d")
+    today = time.strftime(
+        "%Y-%m-%d"
+    )
 
     conn.execute(
         """
-        INSERT INTO hint_usage (user_id, date, count)
+        INSERT INTO hint_usage (
+            user_id,
+            date,
+            count
+        )
         VALUES (?, ?, 1)
+
         ON CONFLICT(user_id, date)
-        DO UPDATE SET count = count + 1
+        DO UPDATE SET
+            count = count + 1
         """,
-        (user_id, today)
+        (
+            user_id,
+            today
+        )
     )
 
     conn.commit()
+
     conn.close()
 
 
-def register_game_channel(channel_id: int):
+# =========================================================
+# GAME DATABASE
+# =========================================================
+
+def register_game_channel(
+    channel_id: int
+):
+
     conn = get_db()
 
     conn.execute(
         """
-        INSERT INTO game_channels (channel_id, game_active)
+        INSERT INTO game_channels (
+            channel_id,
+            game_active
+        )
         VALUES (?, 1)
+
         ON CONFLICT(channel_id)
-        DO UPDATE SET game_active = 1
+        DO UPDATE SET
+            game_active = 1
         """,
-        (channel_id,)
+        (
+            channel_id,
+        )
     )
 
     conn.commit()
+
     conn.close()
 
 
-def deactivate_game_channel(channel_id: int):
+def deactivate_game_channel(
+    channel_id: int
+):
+
     conn = get_db()
 
     conn.execute(
@@ -167,12 +337,19 @@ def deactivate_game_channel(channel_id: int):
         SET game_active = 0
         WHERE channel_id = ?
         """,
-        (channel_id,)
+        (
+            channel_id,
+        )
     )
 
     conn.commit()
+
     conn.close()
 
+
+# =========================================================
+# PLAYER STATS
+# =========================================================
 
 def update_player_stats(
     user_id: int,
@@ -181,6 +358,7 @@ def update_player_stats(
     wrong: int = 0,
     hints: int = 0
 ):
+
     conn = get_db()
 
     conn.execute(
@@ -196,9 +374,17 @@ def update_player_stats(
 
         ON CONFLICT(user_id, channel_id)
         DO UPDATE SET
-            correct_moves = correct_moves + excluded.correct_moves,
-            wrong_moves = wrong_moves + excluded.wrong_moves,
-            hints_used = hints_used + excluded.hints_used
+            correct_moves =
+                correct_moves
+                + excluded.correct_moves,
+
+            wrong_moves =
+                wrong_moves
+                + excluded.wrong_moves,
+
+            hints_used =
+                hints_used
+                + excluded.hints_used
         """,
         (
             user_id,
@@ -210,10 +396,14 @@ def update_player_stats(
     )
 
     conn.commit()
+
     conn.close()
 
 
-def get_player_scores(channel_id: int):
+def get_player_scores(
+    channel_id: int
+):
+
     conn = get_db()
 
     rows = conn.execute(
@@ -223,12 +413,17 @@ def get_player_scores(channel_id: int):
             correct_moves,
             wrong_moves,
             hints_used
+
         FROM player_stats
+
         WHERE channel_id = ?
           AND correct_moves > 0
+
         ORDER BY correct_moves DESC
         """,
-        (channel_id,)
+        (
+            channel_id,
+        )
     ).fetchall()
 
     conn.close()
@@ -237,29 +432,430 @@ def get_player_scores(channel_id: int):
 
 
 # =========================================================
+# ECONOMY
+# =========================================================
+
+def get_balance(
+    user_id: int
+) -> int:
+
+    conn = get_db()
+
+    row = conn.execute(
+        """
+        SELECT balance
+        FROM economy
+        WHERE user_id = ?
+        """,
+        (
+            user_id,
+        )
+    ).fetchone()
+
+    conn.close()
+
+    if row is None:
+        return 0
+
+    return row[0]
+
+
+def add_money(
+    user_id: int,
+    amount: int
+):
+
+    if amount <= 0:
+        return
+
+    conn = get_db()
+
+    conn.execute(
+        """
+        INSERT INTO economy (
+            user_id,
+            balance
+        )
+        VALUES (?, ?)
+
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+            balance =
+                balance
+                + excluded.balance
+        """,
+        (
+            user_id,
+            amount
+        )
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+def remove_money(
+    user_id: int,
+    amount: int
+) -> bool:
+
+    if amount <= 0:
+        return False
+
+    conn = get_db()
+
+    try:
+
+        conn.execute(
+            "BEGIN IMMEDIATE"
+        )
+
+        row = conn.execute(
+            """
+            SELECT balance
+            FROM economy
+            WHERE user_id = ?
+            """,
+            (
+                user_id,
+            )
+        ).fetchone()
+
+        if (
+            row is None
+            or row[0] < amount
+        ):
+
+            conn.rollback()
+
+            return False
+
+        conn.execute(
+            """
+            UPDATE economy
+            SET balance =
+                balance - ?
+            WHERE user_id = ?
+            """,
+            (
+                amount,
+                user_id
+            )
+        )
+
+        conn.commit()
+
+        return True
+
+    except Exception as e:
+
+        conn.rollback()
+
+        print(
+            "REMOVE MONEY ERROR:",
+            repr(e)
+        )
+
+        return False
+
+    finally:
+
+        conn.close()
+
+
+# =========================================================
+# INVENTORY
+# =========================================================
+
+def get_item_count(
+    user_id: int,
+    item: str
+) -> int:
+
+    conn = get_db()
+
+    row = conn.execute(
+        """
+        SELECT quantity
+        FROM inventory
+        WHERE user_id = ?
+          AND item = ?
+        """,
+        (
+            user_id,
+            item
+        )
+    ).fetchone()
+
+    conn.close()
+
+    if row is None:
+        return 0
+
+    return row[0]
+
+
+def add_item(
+    user_id: int,
+    item: str,
+    quantity: int = 1
+):
+
+    if quantity <= 0:
+        return
+
+    conn = get_db()
+
+    conn.execute(
+        """
+        INSERT INTO inventory (
+            user_id,
+            item,
+            quantity
+        )
+        VALUES (?, ?, ?)
+
+        ON CONFLICT(user_id, item)
+        DO UPDATE SET
+            quantity =
+                quantity
+                + excluded.quantity
+        """,
+        (
+            user_id,
+            item,
+            quantity
+        )
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+def remove_item(
+    user_id: int,
+    item: str,
+    quantity: int = 1
+) -> bool:
+
+    if quantity <= 0:
+        return False
+
+    conn = get_db()
+
+    try:
+
+        conn.execute(
+            "BEGIN IMMEDIATE"
+        )
+
+        row = conn.execute(
+            """
+            SELECT quantity
+            FROM inventory
+            WHERE user_id = ?
+              AND item = ?
+            """,
+            (
+                user_id,
+                item
+            )
+        ).fetchone()
+
+        if (
+            row is None
+            or row[0] < quantity
+        ):
+
+            conn.rollback()
+
+            return False
+
+        new_quantity = (
+            row[0] - quantity
+        )
+
+        if new_quantity <= 0:
+
+            conn.execute(
+                """
+                DELETE FROM inventory
+                WHERE user_id = ?
+                  AND item = ?
+                """,
+                (
+                    user_id,
+                    item
+                )
+            )
+
+        else:
+
+            conn.execute(
+                """
+                UPDATE inventory
+                SET quantity = ?
+                WHERE user_id = ?
+                  AND item = ?
+                """,
+                (
+                    new_quantity,
+                    user_id,
+                    item
+                )
+            )
+
+        conn.commit()
+
+        return True
+
+    except Exception as e:
+
+        conn.rollback()
+
+        print(
+            "REMOVE ITEM ERROR:",
+            repr(e)
+        )
+
+        return False
+
+    finally:
+
+        conn.close()
+
+
+# =========================================================
+# MUTE
+# =========================================================
+
+def mute_user(
+    channel_id: int,
+    user_id: int,
+    minutes: int
+):
+
+    expires_at = (
+        time.time()
+        + minutes * 60
+    )
+
+    conn = get_db()
+
+    conn.execute(
+        """
+        INSERT INTO mutes (
+            channel_id,
+            user_id,
+            expires_at
+        )
+        VALUES (?, ?, ?)
+
+        ON CONFLICT(channel_id, user_id)
+        DO UPDATE SET
+            expires_at =
+                excluded.expires_at
+        """,
+        (
+            channel_id,
+            user_id,
+            expires_at
+        )
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+def is_user_muted(
+    channel_id: int,
+    user_id: int
+) -> bool:
+
+    conn = get_db()
+
+    row = conn.execute(
+        """
+        SELECT expires_at
+        FROM mutes
+        WHERE channel_id = ?
+          AND user_id = ?
+        """,
+        (
+            channel_id,
+            user_id
+        )
+    ).fetchone()
+
+    if row is None:
+
+        conn.close()
+
+        return False
+
+    expires_at = row[0]
+
+    # Mute đã hết hạn
+    if time.time() >= expires_at:
+
+        conn.execute(
+            """
+            DELETE FROM mutes
+            WHERE channel_id = ?
+              AND user_id = ?
+            """,
+            (
+                channel_id,
+                user_id
+            )
+        )
+
+        conn.commit()
+
+        conn.close()
+
+        return False
+
+    conn.close()
+
+    return True
+
+
+# =========================================================
 # TEXT HELPERS
 # =========================================================
 
-def normalize(text: str) -> str:
+def normalize(
+    text: str
+) -> str:
+
     text = text.strip().lower()
-    text = re.sub(r"\s+", " ", text)
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
     return text
 
 
-def count_words(text: str) -> int:
-    return len(text.split())
+def count_words(
+    text: str
+) -> int:
+
+    return len(
+        text.split()
+    )
 
 
-def last_word(text: str) -> str:
-    parts = text.split()
+def first_word(
+    text: str
+) -> str:
 
-    if not parts:
-        return ""
-
-    return parts[-1]
-
-
-def first_word(text: str) -> str:
     parts = text.split()
 
     if not parts:
@@ -268,59 +864,105 @@ def first_word(text: str) -> str:
     return parts[0]
 
 
-def is_valid_word_count(text: str) -> bool:
-    count = count_words(text)
-    return 2 <= count <= 3
+def last_word(
+    text: str
+) -> str:
+
+    parts = text.split()
+
+    if not parts:
+        return ""
+
+    return parts[-1]
 
 
-def starts_with_required(word: str, required: str) -> bool:
-    return first_word(word) == required
+def is_valid_word_count(
+    text: str
+) -> bool:
 
-
-def hide_word(word: str) -> str:
-    if len(word) <= 2:
-        return word
-
-    visible_chars = max(1, len(word) // 3)
+    count = count_words(
+        text
+    )
 
     return (
-        word[:visible_chars]
-        + "#" * (len(word) - visible_chars)
+        2 <= count <= 3
     )
 
 
-def current_time() -> float:
-    return time.time()
+def starts_with_required(
+    word: str,
+    required: str
+) -> bool:
+
+    return (
+        first_word(word)
+        == required
+    )
+
+
+def hide_word(
+    word: str
+) -> str:
+
+    if len(word) <= 2:
+        return word
+
+    visible_chars = max(
+        1,
+        len(word) // 3
+    )
+
+    return (
+        word[:visible_chars]
+        + "#"
+        * (
+            len(word)
+            - visible_chars
+        )
+    )
 
 
 # =========================================================
-# GAME HELPERS
+# GAME
 # =========================================================
 
-def create_game(first_word: str):
-    first_word = normalize(first_word)
+def create_game(
+    first_word: str
+):
+
+    first_word = normalize(
+        first_word
+    )
 
     return {
         "word": first_word,
-        "required": last_word(first_word),
 
-        "used": {first_word},
+        "required": last_word(
+            first_word
+        ),
+
+        "used": {
+            first_word
+        },
 
         "last_user": None,
-        "last_move": current_time(),
+
+        "last_move": time.time(),
 
         "state": "ACTIVE",
-
-        "scores": {},
 
         "wrong_attempts": {},
 
         "bot_turn": False,
+
         "bot_word": None
     }
 
 
-def is_timeout(game) -> bool:
+def is_timeout(
+    game
+) -> bool:
+
     if game["state"] != "ACTIVE":
         return False
 
@@ -328,69 +970,109 @@ def is_timeout(game) -> bool:
         return False
 
     return (
-        current_time() - game["last_move"]
+        time.time()
+        - game["last_move"]
         >= TIMEOUT
     )
 
 
-def end_game(channel_id: int):
+def end_game(
+    channel_id: int
+):
+
     if channel_id in games:
-        del games[channel_id]
 
-    deactivate_game_channel(channel_id)
+        del games[
+            channel_id
+        ]
 
-
-def reset_wrong_attempts(game):
-    game["wrong_attempts"] = {}
+    deactivate_game_channel(
+        channel_id
+    )
 
 
 # =========================================================
 # API
 # =========================================================
 
-async def api_get(endpoint, params=None):
+async def api_get(
+    endpoint,
+    params=None
+):
+
     global http_session
 
-    if http_session is None or http_session.closed:
-        timeout = aiohttp.ClientTimeout(
-            total=API_TIMEOUT
+    if (
+        http_session is None
+        or http_session.closed
+    ):
+
+        timeout = (
+            aiohttp.ClientTimeout(
+                total=API_TIMEOUT
+            )
         )
 
-        http_session = aiohttp.ClientSession(
-            timeout=timeout
+        http_session = (
+            aiohttp.ClientSession(
+                timeout=timeout
+            )
         )
 
-    url = f"{API_BASE}/{endpoint}"
+    url = (
+        f"{API_BASE}/{endpoint}"
+    )
 
     try:
+
         async with http_session.get(
             url,
             params=params
         ) as response:
 
             if response.status != 200:
+
                 print(
-                    f"API HTTP ERROR: "
-                    f"{response.status} - {url}"
+                    "API HTTP ERROR:",
+                    response.status
                 )
+
                 return None
 
             return await response.json()
 
     except asyncio.TimeoutError:
-        print("API TIMEOUT:", url)
+
+        print(
+            "API TIMEOUT:",
+            url
+        )
+
         return None
 
     except aiohttp.ClientError as e:
-        print("API CLIENT ERROR:", e)
+
+        print(
+            "API CLIENT ERROR:",
+            repr(e)
+        )
+
         return None
 
     except Exception as e:
-        print("API ERROR:", repr(e))
+
+        print(
+            "API ERROR:",
+            repr(e)
+        )
+
         return None
 
 
-async def lookup_word(word: str) -> bool:
+async def lookup_word(
+    word: str
+) -> bool:
+
     data = await api_get(
         "lookup",
         {
@@ -403,8 +1085,17 @@ async def lookup_word(word: str) -> bool:
     if not data:
         return False
 
-    if isinstance(data, dict):
-        return bool(data.get("exists", False))
+    if isinstance(
+        data,
+        dict
+    ):
+
+        return bool(
+            data.get(
+                "exists",
+                False
+            )
+        )
 
     return False
 
@@ -413,6 +1104,7 @@ async def suggest_words(
     prefix: str,
     limit: int = SUGGEST_LIMIT
 ):
+
     data = await api_get(
         "suggest",
         {
@@ -424,47 +1116,86 @@ async def suggest_words(
     if not data:
         return []
 
-    result = []
+    if isinstance(
+        data,
+        list
+    ):
 
-    if isinstance(data, list):
         result = data
 
-    elif isinstance(data, dict):
-        result = data.get("suggestions", [])
+    elif isinstance(
+        data,
+        dict
+    ):
+
+        result = data.get(
+            "suggestions",
+            []
+        )
+
+    else:
+
+        result = []
 
     cleaned = []
 
     for item in result:
 
-        if isinstance(item, str):
-            word = normalize(item)
+        if isinstance(
+            item,
+            str
+        ):
 
-        elif isinstance(item, dict):
+            word = normalize(
+                item
+            )
+
+        elif isinstance(
+            item,
+            dict
+        ):
+
             word = normalize(
                 str(
                     item.get(
                         "word",
-                        item.get("term", "")
+                        item.get(
+                            "term",
+                            ""
+                        )
                     )
                 )
             )
 
         else:
+
             continue
 
         if word:
-            cleaned.append(word)
 
-    # Xóa duplicate nhưng giữ thứ tự
-    cleaned = list(dict.fromkeys(cleaned))
+            cleaned.append(
+                word
+            )
+
+    # Remove duplicate
+    cleaned = list(
+        dict.fromkeys(
+            cleaned
+        )
+    )
 
     return cleaned[:limit]
 
+
+# =========================================================
+# VALID MOVES
+# =========================================================
 
 async def get_valid_moves(
     game,
     limit: int = 5
 ):
+
     suggestions = await suggest_words(
         game["required"],
         SUGGEST_LIMIT
@@ -474,7 +1205,9 @@ async def get_valid_moves(
 
     for word in suggestions:
 
-        word = normalize(word)
+        word = normalize(
+            word
+        )
 
         if not word:
             continue
@@ -482,7 +1215,9 @@ async def get_valid_moves(
         if word in game["used"]:
             continue
 
-        if not is_valid_word_count(word):
+        if not is_valid_word_count(
+            word
+        ):
             continue
 
         if not starts_with_required(
@@ -491,14 +1226,19 @@ async def get_valid_moves(
         ):
             continue
 
-        candidates.append(word)
+        candidates.append(
+            word
+        )
 
     if not candidates:
         return []
 
-    # Kiểm tra API song song
+    # Lookup API song song
     results = await asyncio.gather(
-        *(lookup_word(word) for word in candidates),
+        *(
+            lookup_word(word)
+            for word in candidates
+        ),
         return_exceptions=True
     )
 
@@ -508,8 +1248,12 @@ async def get_valid_moves(
         candidates,
         results
     ):
+
         if result is True:
-            valid.append(word)
+
+            valid.append(
+                word
+            )
 
         if len(valid) >= limit:
             break
@@ -518,7 +1262,7 @@ async def get_valid_moves(
 
 
 # =========================================================
-# RANDOM START
+# RANDOM START WORD
 # =========================================================
 
 VIETNAMESE_CHARS = (
@@ -556,24 +1300,31 @@ async def get_random_starting_word():
 
         for word in suggestions:
 
-            word = normalize(word)
+            word = normalize(
+                word
+            )
 
-            if not is_valid_word_count(word):
+            if not is_valid_word_count(
+                word
+            ):
                 continue
 
-            candidates.append(word)
+            candidates.append(
+                word
+            )
 
-        if not candidates:
-            continue
-
-        random.shuffle(candidates)
+        random.shuffle(
+            candidates
+        )
 
         for word in candidates[:10]:
 
-            if await lookup_word(word):
+            if await lookup_word(
+                word
+            ):
+
                 return word
 
-    # Fallback
     return "học sinh"
 
 
@@ -587,57 +1338,85 @@ async def handle_wrong_attempt(
     user_id: int,
     reason: str
 ):
-    user_key = str(user_id)
+
+    user_key = str(
+        user_id
+    )
 
     attempts = (
-        game["wrong_attempts"].get(user_key, 0)
+        game["wrong_attempts"].get(
+            user_key,
+            0
+        )
         + 1
     )
 
-    game["wrong_attempts"][user_key] = attempts
+    game["wrong_attempts"][
+        user_key
+    ] = attempts
 
-    # Luôn ghi nhận lần sai
+    # Ghi nhận lần sai
     update_player_stats(
         user_id,
         message.channel.id,
         wrong=1
     )
 
-    hint = await get_hint_for_wrong(game)
-
-    hint_text = (
-        f"\n💡 Gợi ý: `{hint}`"
-        if hint
-        else ""
+    hint = await get_hint_for_wrong(
+        game
     )
+
+    hint_text = ""
+
+    if hint:
+
+        hint_text = (
+            f"\n💡 Gợi ý: `{hint}`"
+        )
+
+    # =============================================
+    # 3 lần sai
+    # =============================================
 
     if attempts == MAX_WRONG_ATTEMPTS:
 
         await message.reply(
-            "⚠️ Bạn đã nối sai "
-            f"{MAX_WRONG_ATTEMPTS} lần.\n"
-            "Một lần sai nữa sẽ reset màn chơi."
-            f"{hint_text}"
+            messages.WRONG_THREE.format(
+                max_attempts=
+                    MAX_WRONG_ATTEMPTS
+            )
+            + hint_text
         )
 
         return False
 
+    # =============================================
+    # Lần thứ 4
+    # =============================================
+
     if attempts > MAX_WRONG_ATTEMPTS:
 
         await message.channel.send(
-            "🔄 Màn chơi đã reset do "
-            "nối sai quá nhiều lần."
+            messages.GAME_RESET_WRONG
         )
 
         game["state"] = "WAITING"
+
         game["last_user"] = None
+
         game["last_move"] = None
+
         game["bot_turn"] = False
+
         game["bot_word"] = None
 
-        reset_wrong_attempts(game)
+        game["wrong_attempts"] = {}
 
         return True
+
+    # =============================================
+    # Lần 1-2
+    # =============================================
 
     await message.reply(
         f"❌ {reason}\n"
@@ -653,7 +1432,10 @@ async def handle_wrong_attempt(
 # HINT
 # =========================================================
 
-async def get_hint_for_wrong(game):
+async def get_hint_for_wrong(
+    game
+):
+
     valid_moves = await get_valid_moves(
         game,
         3
@@ -662,19 +1444,24 @@ async def get_hint_for_wrong(game):
     if not valid_moves:
         return None
 
-    hint_word = random.choice(valid_moves)
+    hint_word = random.choice(
+        valid_moves
+    )
 
-    return hide_word(hint_word)
+    return hide_word(
+        hint_word
+    )
 
 
 # =========================================================
-# BOT TURN
+# BOT PLAY
 # =========================================================
 
 async def bot_play_turn(
     message,
     game
 ):
+
     valid_moves = await get_valid_moves(
         game,
         10
@@ -683,115 +1470,357 @@ async def bot_play_turn(
     if not valid_moves:
 
         await message.channel.send(
-            f"🏁 Không còn từ hợp lệ để nối với "
-            f"`{game['required']}`.\n"
-            "🎮 Màn này kết thúc."
+            messages.GAME_NO_MOVE.format(
+                required=
+                    game["required"]
+            )
         )
 
-        end_game(message.channel.id)
+        end_game(
+            message.channel.id
+        )
 
         return False
 
-    bot_word = random.choice(valid_moves)
+    bot_word = random.choice(
+        valid_moves
+    )
 
     game["word"] = bot_word
 
-    game["used"].add(bot_word)
+    game["used"].add(
+        bot_word
+    )
 
-    game["required"] = last_word(bot_word)
+    game["required"] = last_word(
+        bot_word
+    )
 
     game["bot_turn"] = True
+
     game["bot_word"] = bot_word
 
-    game["last_move"] = current_time()
+    game["last_move"] = time.time()
 
     await message.channel.send(
-        f"> Yuki nối: **{bot_word}**\n"
-        f"> Cần nối: **`{game['required']}`**"
+        messages.BOT_MOVE.format(
+            word=bot_word,
+            required=game["required"]
+        )
     )
 
     return True
 
 
 # =========================================================
+# PROCESS CORRECT MOVE
+# =========================================================
+
+async def process_player_move(
+    message,
+    game,
+    word
+):
+
+    channel_id = (
+        message.channel.id
+    )
+
+    user_id = (
+        message.author.id
+    )
+
+    user_key = str(
+        user_id
+    )
+
+    # =============================================
+    # Word count
+    # =============================================
+
+    if not is_valid_word_count(
+        word
+    ):
+
+        await message.reply(
+            messages.INVALID_WORD_COUNT
+        )
+
+        return
+
+    # =============================================
+    # Required word
+    # =============================================
+
+    required = game[
+        "required"
+    ]
+
+    if not starts_with_required(
+        word,
+        required
+    ):
+
+        await handle_wrong_attempt(
+            message,
+            game,
+            user_id,
+            messages.WRONG_REQUIRED
+        )
+
+        return
+
+    # =============================================
+    # Duplicate
+    # =============================================
+
+    if word in game["used"]:
+
+        await message.reply(
+            messages.DUPLICATE_WORD
+        )
+
+        return
+
+    # =============================================
+    # Dictionary
+    # =============================================
+
+    valid = await lookup_word(
+        word
+    )
+
+    if not valid:
+
+        await message.reply(
+            messages.WORD_NOT_FOUND.format(
+                word=word
+            )
+        )
+
+        return
+
+    # =============================================
+    # Correct
+    # =============================================
+
+    game["word"] = word
+
+    game["used"].add(
+        word
+    )
+
+    game["last_user"] = user_id
+
+    game["last_move"] = time.time()
+
+    game["state"] = "ACTIVE"
+
+    game["wrong_attempts"][
+        user_key
+    ] = 0
+
+    game["bot_turn"] = False
+
+    game["bot_word"] = None
+
+    # =============================================
+    # Stats
+    # =============================================
+
+    update_player_stats(
+        user_id,
+        channel_id,
+        correct=1
+    )
+
+    # =============================================
+    # Economy
+    # =============================================
+
+    add_money(
+        user_id,
+        COIN_REWARD_CORRECT
+    )
+
+    # =============================================
+    # Reaction
+    # =============================================
+
+    try:
+
+        await message.add_reaction(
+            messages.CORRECT_REACTION
+        )
+
+    except discord.HTTPException:
+        pass
+
+    # =============================================
+    # Next required
+    # =============================================
+
+    game["required"] = last_word(
+        word
+    )
+
+    # =============================================
+    # Bot 30%
+    # =============================================
+
+    if (
+        random.random()
+        < BOT_PLAY_CHANCE
+    ):
+
+        await bot_play_turn(
+            message,
+            game
+        )
+
+        return
+
+    # =============================================
+    # Check whether there are moves
+    # =============================================
+
+    valid_moves = await get_valid_moves(
+        game,
+        1
+    )
+
+    if not valid_moves:
+
+        await message.channel.send(
+            messages.GAME_NO_MOVE.format(
+                required=
+                    game["required"]
+            )
+        )
+
+        end_game(
+            channel_id
+        )
+
+
+# =========================================================
 # COMMAND: NOITU
 # =========================================================
 
-@bot.command(name="startt")
-async def startt(
+@bot.command(
+    name="noitu"
+)
+async def noitu(
     ctx,
     *,
     word=None
 ):
-    channel_id = ctx.channel.id
 
-    # Nếu đã có game active
+    channel_id = (
+        ctx.channel.id
+    )
+
+    # =============================================
+    # Existing game
+    # =============================================
+
     if channel_id in games:
 
-        game = games[channel_id]
+        game = games[
+            channel_id
+        ]
 
-        if is_timeout(game):
+        # Timeout
+        if is_timeout(
+            game
+        ):
 
-            end_game(channel_id)
-
-            await ctx.send(
-                "⏰ Màn trước đã kết thúc do "
-                "quá 3 giờ không có lượt nối.\n"
-                "🔗 Dùng `!noitu` để bắt đầu màn mới."
+            end_game(
+                channel_id
             )
 
-            if word is None:
-                word = await get_random_starting_word()
-
-            else:
-                # Cho phép !noitu abc sau timeout
-                pass
+            await ctx.send(
+                messages.GAME_TIMEOUT.format(
+                    prefix=PREFIX
+                )
+            )
 
         else:
+
             await ctx.send(
-                "❌ Kênh này đang có một màn chơi.\n"
-                f"👉 Từ cần nối: "
-                f"**`{game['required']}`**"
+                messages.GAME_ALREADY_RUNNING.format(
+                    required=
+                        game["required"]
+                )
             )
 
             return
 
+    # =============================================
+    # Random word
+    # =============================================
+
     if not word:
+
         word = await get_random_starting_word()
 
-    word = normalize(word)
+    word = normalize(
+        word
+    )
 
-    if not is_valid_word_count(word):
+    # =============================================
+    # Word count
+    # =============================================
+
+    if not is_valid_word_count(
+        word
+    ):
 
         await ctx.send(
-            "❌ Từ bắt đầu phải có 2-3 từ.\n"
-            "Ví dụ: `học sinh` → `sinh viên`"
+            messages.INVALID_WORD_COUNT
         )
 
         return
 
-    valid = await lookup_word(word)
+    # =============================================
+    # Dictionary
+    # =============================================
+
+    valid = await lookup_word(
+        word
+    )
 
     if not valid:
 
         await ctx.send(
-            f"❌ `{word}` không phải từ hợp lệ "
-            "hoặc không có trong từ điển."
+            messages.WORD_NOT_FOUND.format(
+                word=word
+            )
         )
 
         return
 
-    games[channel_id] = create_game(word)
+    # =============================================
+    # Create
+    # =============================================
 
-    register_game_channel(channel_id)
+    games[channel_id] = create_game(
+        word
+    )
 
-    game = games[channel_id]
+    register_game_channel(
+        channel_id
+    )
+
+    game = games[
+        channel_id
+    ]
 
     embed = discord.Embed(
         title="🔗 NỐI TỪ — MÀN MỚI",
         description=(
             f"**Từ bắt đầu:** `{word}`\n\n"
-            "Từ cần nối:\n"
+            "👉 **Từ cần nối:**\n"
             f"## {game['required']}"
         ),
         color=discord.Color.green()
@@ -804,120 +1833,91 @@ async def startt(
         )
     )
 
-    await ctx.send(embed=embed)
-
-
-# =========================================================
-# COMMAND: HELP
-# =========================================================
-
-@bot.command(name="yuki")
-async def yuki(ctx):
-
-    embed = discord.Embed(
-        title="📖 Hướng dẫn — Nối từ",
-        description=(
-            "🔗 Game nối từ tiếng Việt\n"
-            "By yuki and xenoliag."
-        ),
-        color=discord.Color.blurple()
+    await ctx.send(
+        embed=embed
     )
-
-    embed.add_field(
-        name="🎮 Bắt đầu",
-        value=(
-            "`!noitu`\n"
-            "Bắt đầu bằng từ ngẫu nhiên.\n\n"
-            "`!noitu học sinh`\n"
-            "Bắt đầu bằng từ bạn chọn."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🔗 Cách chơi",
-        value=(
-            "Từ đầu tiên của lượt mới phải "
-            "trùng với từ cuối của lượt trước.\n\n"
-            "Ví dụ:\n"
-            "`học sinh` → `sinh viên` → "
-            "`viên chức`"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="⚠️ Luật",
-        value=(
-            "• Mỗi lượt có 2-3 từ.\n"
-            "• Không được dùng lại từ.\n"
-            "• Không được nối hai lượt liên tiếp.\n"
-            "• Từ phải tồn tại trong từ điển.\n"
-            "• Nối đúng → ✅\n"
-            "• Sai 3 lần → cảnh báo.\n"
-            "• Sai lần 4 → reset màn.\n"
-            "• Bot có 30% tỉ lệ nối tiếp.\n"
-            "• Không có lượt trong 3 giờ → kết thúc."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="💡 Trợ giúp",
-        value=(
-            "`!kho` — gợi ý, 5 lần/ngày.\n"
-            "`!diem` — xem bảng điểm.\n"
-            "`!dungnoitu` — dừng game."
-        ),
-        inline=False
-    )
-
-    await ctx.send(embed=embed)
 
 
 # =========================================================
 # COMMAND: KHO
 # =========================================================
 
-@bot.command(name="ewhat")
-async def ewhat(ctx):
+@bot.command(
+    name="kho"
+)
+async def kho(ctx):
 
-    channel_id = ctx.channel.id
-    user_id = ctx.author.id
+    channel_id = (
+        ctx.channel.id
+    )
+
+    user_id = (
+        ctx.author.id
+    )
+
+    # =============================================
+    # Game?
+    # =============================================
 
     if channel_id not in games:
 
         await ctx.send(
-            "❌ Chưa có màn nối từ.\n"
-            "Dùng `!noitu` để bắt đầu."
+            messages.NO_GAME.format(
+                prefix=PREFIX
+            )
         )
 
         return
 
-    game = games[channel_id]
+    game = games[
+        channel_id
+    ]
 
-    if is_timeout(game):
+    # =============================================
+    # Timeout
+    # =============================================
 
-        end_game(channel_id)
+    if is_timeout(
+        game
+    ):
+
+        end_game(
+            channel_id
+        )
 
         await ctx.send(
-            "⏰ Màn chơi đã kết thúc do "
-            "quá 3 giờ không có lượt nối.\n"
-            "Dùng `!noitu` để bắt đầu màn mới."
+            messages.GAME_TIMEOUT.format(
+                prefix=PREFIX
+            )
         )
 
         return
 
-    hint_count = get_user_hint_count(user_id)
+    # =============================================
+    # Daily limit
+    # =============================================
 
-    if hint_count >= DAILY_HINT_LIMIT:
+    hint_count = get_user_hint_count(
+        user_id
+    )
+
+    if (
+        hint_count
+        >= DAILY_HINT_LIMIT
+    ):
 
         await ctx.send(
-            f"❌ Bạn đã dùng hết "
-            f"{DAILY_HINT_LIMIT} lần gợi ý hôm nay."
+            messages.HINT_LIMIT.format(
+                limit=
+                    DAILY_HINT_LIMIT
+            )
         )
 
         return
+
+    # =============================================
+    # Find moves
+    # =============================================
 
     valid = await get_valid_moves(
         game,
@@ -927,16 +1927,25 @@ async def ewhat(ctx):
     if not valid:
 
         await ctx.send(
-            f"💀 Không tìm thấy từ nào có thể "
-            f"nối với `{game['required']}`.\n"
-            "🏁 Màn kết thúc."
+            messages.HINT_EMPTY.format(
+                required=
+                    game["required"]
+            )
         )
 
-        end_game(channel_id)
+        end_game(
+            channel_id
+        )
 
         return
 
-    increment_user_hint_count(user_id)
+    # =============================================
+    # Consume hint
+    # =============================================
+
+    increment_user_hint_count(
+        user_id
+    )
 
     update_player_stats(
         user_id,
@@ -946,21 +1955,29 @@ async def ewhat(ctx):
 
     remaining = (
         DAILY_HINT_LIMIT
-        - get_user_hint_count(user_id)
+        - get_user_hint_count(
+            user_id
+        )
     )
 
+    # =============================================
+    # Embed
+    # =============================================
+
     embed = discord.Embed(
-        title="💡 Gợi ý",
-        description=(
-            f"Từ cần nối: **`{game['required']}`**\n"
-            f"Còn lại: "
-            f"**{remaining}/{DAILY_HINT_LIMIT}**"
+        title=messages.HINT_TITLE,
+        description=messages.HINT_CONTENT.format(
+            required=
+                game["required"],
+            remaining=remaining,
+            limit=
+                DAILY_HINT_LIMIT
         ),
         color=discord.Color.gold()
     )
 
     embed.add_field(
-        name="Có thể thử",
+        name=messages.HINT_MOVES_TITLE,
         value="\n".join(
             f"• `{word}`"
             for word in valid
@@ -968,31 +1985,27 @@ async def ewhat(ctx):
         inline=False
     )
 
-    await ctx.send(embed=embed)
+    await ctx.send(
+        embed=embed
+    )
 
 
 # =========================================================
 # COMMAND: DIEM
 # =========================================================
 
-@bot.command(name="bxh")
-async def bxh(ctx):
+@bot.command(
+    name="diem"
+)
+async def diem(ctx):
 
-    channel_id = ctx.channel.id
+    channel_id = (
+        ctx.channel.id
+    )
 
-    if channel_id not in games:
-
-        # Cho phép xem bảng điểm cũ
-        scores = get_player_scores(channel_id)
-
-        if not scores:
-            await ctx.send(
-                "❌ Chưa có điểm trong kênh này."
-            )
-            return
-
-    else:
-        scores = get_player_scores(channel_id)
+    scores = get_player_scores(
+        channel_id
+    )
 
     if not scores:
 
@@ -1009,23 +2022,43 @@ async def bxh(ctx):
         1
     ):
 
-        user_id = int(row["user_id"])
+        user_id = int(
+            row[0]
+        )
+
+        correct = int(
+            row[1]
+        )
+
+        wrong = int(
+            row[2]
+        )
+
+        hints = int(
+            row[3]
+        )
 
         member = None
 
         if ctx.guild:
-            member = ctx.guild.get_member(
-                user_id
+
+            member = (
+                ctx.guild.get_member(
+                    user_id
+                )
             )
 
         if member:
-            name = member.display_name
-        else:
-            name = f"User {user_id}"
 
-        correct = row["correct_moves"]
-        wrong = row["wrong_moves"]
-        hints = row["hints_used"]
+            name = (
+                member.display_name
+            )
+
+        else:
+
+            name = (
+                f"User {user_id}"
+            )
 
         lines.append(
             f"**{index}.** {name}\n"
@@ -1036,185 +2069,113 @@ async def bxh(ctx):
 
     embed = discord.Embed(
         title="🏆 Bảng điểm",
-        description="\n".join(lines),
+        description="\n".join(
+            lines
+        ),
         color=discord.Color.gold()
     )
 
     embed.set_footer(
-        text="Điểm được lưu trong database."
+        text=(
+            "Điểm được lưu trong database."
+        )
     )
 
-    await ctx.send(embed=embed)
+    await ctx.send(
+        embed=embed
+    )
 
 
 # =========================================================
 # COMMAND: DUNGNOITU
 # =========================================================
 
-@bot.command(name="endd")
-async def endd(ctx):
+@bot.command(
+    name="dungnoitu"
+)
+async def dung_noitu(ctx):
 
-    channel_id = ctx.channel.id
+    channel_id = (
+        ctx.channel.id
+    )
 
     if channel_id not in games:
 
         await ctx.send(
-            "❌ Không có game đang chạy."
+            messages.NO_GAME.format(
+                prefix=PREFIX
+            )
         )
 
         return
 
-    end_game(channel_id)
+    end_game(
+        channel_id
+    )
 
     await ctx.send(
-        "🛑 Đã dừng game nối từ."
+        messages.GAME_STOPPED
     )
 
 
 # =========================================================
-# GAME MESSAGE PROCESSING
+# COMMAND: HELP
 # =========================================================
 
-async def process_player_move(
-    message,
-    game,
-    word
-):
-    channel_id = message.channel.id
-    user_id = message.author.id
-    user_key = str(user_id)
+@bot.command(
+    name="helpnoitu"
+)
+async def help_noitu(ctx):
 
-    # ---------------------------------------------
-    # Check word count
-    # ---------------------------------------------
-
-    if not is_valid_word_count(word):
-
-        await message.reply(
-            "❌ Từ nối phải có **2-3 từ**.\n"
-            "Ví dụ: `sinh viên`, `viên chức`"
-        )
-
-        return
-
-    # ---------------------------------------------
-    # Check required
-    # ---------------------------------------------
-
-    required = game["required"]
-
-    if not starts_with_required(
-        word,
-        required
-    ):
-
-        await handle_wrong_attempt(
-            message,
-            game,
-            user_id,
-            "Không đúng từ cần nối!"
-        )
-
-        return
-
-    # ---------------------------------------------
-    # Check duplicate
-    # ---------------------------------------------
-
-    if word in game["used"]:
-
-        await message.reply(
-            "♻️ Từ này đã được sử dụng "
-            "trong màn này."
-        )
-
-        return
-
-    # ---------------------------------------------
-    # Check dictionary
-    # ---------------------------------------------
-
-    valid = await lookup_word(word)
-
-    if not valid:
-
-        await message.reply(
-            f"❌ `{word}` không được tìm thấy "
-            "trong từ điển."
-        )
-
-        return
-
-    # ---------------------------------------------
-    # Correct move
-    # ---------------------------------------------
-
-    game["word"] = word
-    game["used"].add(word)
-
-    game["last_user"] = user_id
-    game["last_move"] = current_time()
-
-    game["state"] = "ACTIVE"
-
-    game["scores"][user_key] = (
-        game["scores"].get(user_key, 0) + 1
+    embed = discord.Embed(
+        title=messages.HELP_TITLE,
+        description=messages.HELP_DESCRIPTION,
+        color=discord.Color.blurple()
     )
 
-    game["wrong_attempts"][user_key] = 0
-
-    game["bot_turn"] = False
-    game["bot_word"] = None
-
-    update_player_stats(
-        user_id,
-        channel_id,
-        correct=1
+    embed.add_field(
+        name="🎮 Bắt đầu",
+        value=messages.HELP_START.format(
+            prefix=PREFIX
+        ),
+        inline=False
     )
 
-    try:
-        await message.add_reaction("✅")
-
-    except discord.HTTPException:
-        pass
-
-    # ---------------------------------------------
-    # Update required
-    # ---------------------------------------------
-
-    game["required"] = last_word(word)
-
-    # ---------------------------------------------
-    # Bot chance
-    # ---------------------------------------------
-
-    if random.random() < BOT_PLAY_CHANCE:
-
-        await bot_play_turn(
-            message,
-            game
-        )
-
-        return
-
-    # ---------------------------------------------
-    # Check if game has any valid move
-    # ---------------------------------------------
-
-    valid_moves = await get_valid_moves(
-        game,
-        1
+    embed.add_field(
+        name="🔗 Cách chơi",
+        value=messages.HELP_PLAY,
+        inline=False
     )
 
-    if not valid_moves:
+    embed.add_field(
+        name="⚠️ Luật",
+        value=messages.HELP_RULES,
+        inline=False
+    )
 
-        await message.channel.send(
-            f"🏁 Không còn từ hợp lệ để nối với "
-            f"`{game['required']}`.\n"
-            "🎮 Màn này kết thúc."
-        )
+    embed.add_field(
+        name="💰 Kinh tế",
+        value=messages.HELP_ECONOMY.format(
+            prefix=PREFIX
+        ),
+        inline=False
+    )
 
-        end_game(channel_id)
+    embed.add_field(
+        name="🛠️ Khác",
+        value=messages.HELP_OTHER.format(
+            prefix=PREFIX
+        ),
+        inline=False
+    )
+
+    embed.set_footer(
+        text=messages.HELP_FOOTER
+    )
+
+    await ctx.send(
+        embed=embed
+    )
 
 
 # =========================================================
@@ -1222,63 +2183,110 @@ async def process_player_move(
 # =========================================================
 
 @bot.event
-async def on_message(message):
+async def on_message(
+    message
+):
 
-    # Ignore bots
+    # =============================================
+    # Ignore bot
+    # =============================================
+
     if message.author.bot:
         return
 
-    # Commands
-    await bot.process_commands(message)
+    # =============================================
+    # MUTE CHECK
+    #
+    # CỰC KỲ QUAN TRỌNG:
+    # kiểm tra trước process_commands.
+    #
+    # User bị mute -> bot hoàn toàn bỏ qua.
+    # =============================================
 
-    # Ignore command messages
-    if message.content.startswith(PREFIX):
+    if is_user_muted(
+        message.channel.id,
+        message.author.id
+    ):
+
         return
 
-    channel_id = message.channel.id
+    # =============================================
+    # Commands
+    # =============================================
 
+    await bot.process_commands(
+        message
+    )
+
+    # =============================================
+    # Ignore commands
+    # =============================================
+
+    if message.content.startswith(
+        PREFIX
+    ):
+
+        return
+
+    # =============================================
     # No game
+    # =============================================
+
+    channel_id = (
+        message.channel.id
+    )
+
     if channel_id not in games:
         return
 
-    game = games[channel_id]
+    game = games[
+        channel_id
+    ]
 
-    # ---------------------------------------------
+    # =============================================
     # Timeout
-    # ---------------------------------------------
+    # =============================================
 
-    if is_timeout(game):
+    if is_timeout(
+        game
+    ):
 
-        end_game(channel_id)
+        end_game(
+            channel_id
+        )
 
         await message.channel.send(
-            "⏰ Màn chơi đã kết thúc do "
-            "quá 3 giờ không có lượt nối.\n"
-            "🔗 Dùng `!noitu` để bắt đầu màn mới."
+            messages.GAME_TIMEOUT.format(
+                prefix=PREFIX
+            )
         )
 
         return
 
-    # ---------------------------------------------
-    # WAITING safety
-    # ---------------------------------------------
+    # =============================================
+    # Safety
+    # =============================================
 
     if game["state"] != "ACTIVE":
-
         return
 
-    # ---------------------------------------------
+    # =============================================
     # Normalize
-    # ---------------------------------------------
+    # =============================================
 
-    word = normalize(message.content)
+    word = normalize(
+        message.content
+    )
 
     if not word:
         return
 
-    # ---------------------------------------------
+    # =============================================
     # BOT TURN
-    # ---------------------------------------------
+    #
+    # Sau khi bot nối:
+    # player được quyền nối tiếp.
+    # =============================================
 
     if game["bot_turn"]:
 
@@ -1290,26 +2298,26 @@ async def on_message(message):
 
         return
 
-    # ---------------------------------------------
-    # Prevent same user twice
-    # ---------------------------------------------
+    # =============================================
+    # Prevent same player twice
+    # =============================================
 
     if (
         game["last_user"] is not None
-        and game["last_user"]
+        and
+        game["last_user"]
         == message.author.id
     ):
 
         await message.reply(
-            "⛔ Bạn vừa nối lượt trước.\n"
-            "Hãy chờ người chơi khác."
+            messages.SAME_PLAYER
         )
 
         return
 
-    # ---------------------------------------------
-    # Normal player turn
-    # ---------------------------------------------
+    # =============================================
+    # Player move
+    # =============================================
 
     await process_player_move(
         message,
@@ -1319,7 +2327,7 @@ async def on_message(message):
 
 
 # =========================================================
-# ON READY
+# READY
 # =========================================================
 
 @bot.event
@@ -1328,13 +2336,23 @@ async def on_ready():
     init_db()
 
     print(
-        f"✅ Đăng nhập thành công: "
-        f"{bot.user}"
+        "========================================"
     )
 
     print(
-        f"📡 Đang phục vụ "
-        f"{len(bot.guilds)} server."
+        f"✅ Đăng nhập: {bot.user}"
+    )
+
+    print(
+        f"📡 Server: {len(bot.guilds)}"
+    )
+
+    print(
+        f"🎮 Prefix: {PREFIX}"
+    )
+
+    print(
+        "========================================"
     )
 
 
@@ -1348,12 +2366,15 @@ async def on_command_error(
     error
 ):
 
+    # Unknown command
     if isinstance(
         error,
         commands.CommandNotFound
     ):
+
         return
 
+    # Missing argument
     if isinstance(
         error,
         commands.MissingRequiredArgument
@@ -1361,18 +2382,20 @@ async def on_command_error(
 
         await ctx.send(
             "❌ Thiếu tham số.\n"
-            "Dùng `!helpnoitu` để xem hướng dẫn."
+            f"Dùng `{PREFIX}helpnoitu` "
+            "để xem hướng dẫn."
         )
 
         return
 
+    # Bad argument
     if isinstance(
         error,
-        commands.CommandOnCooldown
+        commands.BadArgument
     ):
 
         await ctx.send(
-            "⏳ Vui lòng thử lại sau."
+            "❌ Tham số không hợp lệ."
         )
 
         return
@@ -1384,24 +2407,7 @@ async def on_command_error(
 
 
 # =========================================================
-# SHUTDOWN
-# =========================================================
-
-async def close_http_session():
-
-    global http_session
-
-    if (
-        http_session is not None
-        and not http_session.closed
-    ):
-        await http_session.close()
-
-        http_session = None
-
-
-# =========================================================
-# MAIN
+# TOKEN CHECK
 # =========================================================
 
 if not TOKEN:
@@ -1412,19 +2418,17 @@ if not TOKEN:
     )
 
 
+# =========================================================
+# DATABASE INIT
+# =========================================================
+
 init_db()
 
 
-try:
-    bot.run(TOKEN)
+# =========================================================
+# RUN
+# =========================================================
 
-finally:
-    try:
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(
-            close_http_session()
-        )
-        loop.close()
-
-    except Exception:
-        pass
+bot.run(
+    TOKEN
+)
