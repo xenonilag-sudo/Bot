@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import random
 import asyncio
 import aiohttp
 import discord
@@ -184,6 +185,18 @@ def create_waiting_game(first_word):
     }
 
 
+async def get_random_starting_word():
+    for _ in range(5):
+        suggestions = await suggest_words("a", 100)
+        if suggestions:
+            random_word = random.choice(suggestions)
+            if count_words(random_word) >= 2:
+                valid = await lookup_word(random_word)
+                if valid:
+                    return random_word
+    return "học sinh"
+
+
 @bot.command(name="noitu")
 async def noitu(ctx, *, word=None):
     channel_id = ctx.channel.id
@@ -196,7 +209,7 @@ async def noitu(ctx, *, word=None):
                 f"**{game['required']}**"
             )
             return
-        word = "học sinh"
+        word = await get_random_starting_word()
 
     word = normalize(word)
 
@@ -262,7 +275,7 @@ async def help_noitu(ctx):
         name="🎮 Bắt đầu",
         value=(
             "`!noitu`\n"
-            "Bắt đầu bằng từ mặc định.\n\n"
+            "Bắt đầu bằng từ ngẫu nhiên từ từ điển.\n\n"
             "`!noitu học sinh`\n"
             "Bắt đầu bằng từ bạn chọn."
         ),
