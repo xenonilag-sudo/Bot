@@ -259,7 +259,7 @@ async def get_valid_moves(game, limit=5):
         if not word.startswith(game["required"]):
             continue
 
-        if count_words(word) < 2:
+        if count_words(word) < 2 or count_words(word) > 3:
             continue
 
         valid_check = await lookup_word(word)
@@ -320,10 +320,10 @@ async def noitu(ctx, *, word=None):
 
     word = normalize(word)
 
-    if count_words(word) < 2:
+    if count_words(word) < 2 or count_words(word) > 3:
         await ctx.send(
-            f"❌ Từ bắt đầu phải có ít nhất 2 từ. "
-            f"Ví dụ: `học sinh`> `sinh viên`"
+            f"❌ Từ bắt đầu phải có 2-3 từ. "
+            f"Ví dụ: `học sinh` → `sinh viên`"
         )
         return
 
@@ -623,6 +623,7 @@ async def on_message(message):
             game["wrong_attempts"] = {}
             game["bot_turn"] = False
 
+    # === KỲ THU BOT ===
     if game["bot_turn"]:
         if not word.startswith(game["required"]):
             user_id = str(message.author.id)
@@ -646,6 +647,7 @@ async def on_message(message):
                 game["last_move"] = None
                 game["wrong_attempts"] = {}
                 game["bot_turn"] = False
+                game["bot_word"] = None
                 return
 
             update_player_stats(int(user_id), channel_id, wrong=1)
@@ -664,7 +666,7 @@ async def on_message(message):
 
         if word in game["used"]:
             await message.reply(
-                "♻️ Từ này đã được sử dụng trong màn này."
+                "♻️ Từ này đã ��ược sử dụng trong màn này."
             )
             return
 
@@ -675,6 +677,7 @@ async def on_message(message):
             )
             return
 
+        # ✅ Người chơi nối đúng
         game["word"] = word
         game["used"].add(word)
         game["last_user"] = message.author.id
@@ -693,10 +696,11 @@ async def on_message(message):
         except Exception as e:
             print("Cannot react:", e)
 
+        game["required"] = last_word(word)
+        
         if random.random() < 0.3:
             await bot_play_turn(message, game)
         else:
-            game["required"] = last_word(word)
             valid_moves = await get_valid_moves(game, 1)
 
             if not valid_moves:
@@ -710,6 +714,7 @@ async def on_message(message):
                 game["last_move"] = None
         return
 
+    # === KỲ THU NGƯỜI CHƠI ===
     if (
         game["last_user"] is not None
         and game["last_user"] == message.author.id
@@ -751,6 +756,7 @@ async def on_message(message):
             game["last_move"] = None
             game["wrong_attempts"] = {}
             game["bot_turn"] = False
+            game["bot_word"] = None
             return
 
         update_player_stats(int(user_id), channel_id, wrong=1)
@@ -775,6 +781,7 @@ async def on_message(message):
         )
         return
 
+    # ✅ Người chơi nối đúng
     game["word"] = word
     game["used"].add(word)
     game["last_user"] = message.author.id
@@ -794,10 +801,11 @@ async def on_message(message):
     except Exception as e:
         print("Cannot react:", e)
 
+    game["required"] = last_word(word)
+    
     if random.random() < 0.3:
         await bot_play_turn(message, game)
     else:
-        game["required"] = last_word(word)
         valid_moves = await get_valid_moves(game, 1)
 
         if not valid_moves:
@@ -845,4 +853,3 @@ if not TOKEN:
     )
 
 bot.run(TOKEN)
- 
