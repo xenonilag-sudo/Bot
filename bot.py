@@ -320,7 +320,7 @@ async def noitu(ctx, *, word=None):
     if count_words(word) < 2:
         await ctx.send(
             f"❌ Từ bắt đầu phải có ít nhất 2 từ. "
-            f"Ví dụ: `học sinh`, `sinh viên`"
+            f"Ví dụ: `học sinh`> `sinh viên`"
         )
         return
 
@@ -341,7 +341,7 @@ async def noitu(ctx, *, word=None):
         title="🔗 NỐI TỪ — MÀN MỚI",
         description=(
             f"**Từ bắt đầu:** `{word}`\n\n"
-            f"👉 Từ cần nối:\n"
+            f"> Từ cần nối:\n"
             f"## {game['required']}"
         ),
         color=discord.Color.green()
@@ -374,8 +374,8 @@ async def help_noitu(ctx):
     embed = discord.Embed(
         title="📖 Hướng dẫn — Nối từ",
         description=(
-            "Game nối từ tiếng Việt dành cho nhiều người "
-            "trong cùng một channel."
+            "Nối từ tiếng Việt "
+            "By yuki and xenoliag."
         ),
         color=discord.Color.blurple()
     )
@@ -449,7 +449,7 @@ async def kho(ctx):
     if hint_count >= DAILY_HINT_LIMIT:
         await ctx.send(
             f"❌ Bạn đã dùng hết {DAILY_HINT_LIMIT} lần gợi ý trong ngày hôm nay.\n"
-            f"Quay lại vào ngày mai!"
+            f"Thử lại vào ngày mai!"
         )
         return
 
@@ -559,7 +559,7 @@ async def bot_play_turn(message, game):
         await message.channel.send(
             f"🏁 Không còn từ hợp lệ để nối với "
             f"`{game['required']}`.\n"
-            f"🎮 Màn n��y kết thúc."
+            f"🎮 Màn này kết thúc."
         )
         game["state"] = "WAITING"
         game["last_user"] = None
@@ -575,8 +575,8 @@ async def bot_play_turn(message, game):
     game["last_move"] = now()
 
     await message.channel.send(
-        f"🤖 Bot nối: **{bot_word}**\n"
-        f"👉 Cần nối bằng: `{game['required']}`"
+        f"Yuki nối: **{bot_word}**\n"
+        f"Cần nối: `{game['required']}`"
     )
     return True
 
