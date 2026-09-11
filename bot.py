@@ -5,6 +5,8 @@ import random
 import asyncio
 import aiohttp
 import discord
+import json
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from discord.ext import commands
@@ -16,6 +18,8 @@ API_BASE = "https://dict.minhqnd.com/api/v1"
 PREFIX = "!"
 TIMEOUT = 3 * 60 * 60
 SUGGEST_LIMIT = 10
+DAILY_HINT_LIMIT = 5
+MAX_WRONG_ATTEMPTS = 3
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -27,6 +31,37 @@ bot = commands.Bot(
 )
 
 games = {}
+db_file = "game_data.json"
+
+
+def load_db():
+    if os.path.exists(db_file):
+        try:
+            with open(db_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+
+def save_db(data):
+    with open(db_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def get_user_hint_count(user_id):
+    db = load_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"hint_{user_id}_{today}"
+    return db.get(key, 0)
+
+
+def increment_user_hint_count(user_id):
+    db = load_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"hint_{user_id}_{today}"
+    db[key] = db.get(key, 0) + 1
+    save_db(db)
 
 
 def normalize(text: str) -> str:
@@ -168,20 +203,10 @@ def create_game(first_word):
         "last_user": None,
         "last_move": now(),
         "state": "ACTIVE",
-        "scores": {}
-    }
-
-
-def create_waiting_game(first_word):
-    first_word = normalize(first_word)
-    return {
-        "word": first_word,
-        "required": last_word(first_word),
-        "used": {first_word},
-        "last_user": None,
-        "last_move": None,
-        "state": "WAITING",
-        "scores": {}
+        "scores": {},
+        "wrong_attempts": {},
+        "bot_turn": False,
+        "bot_word": None
     }
 
 
@@ -252,6 +277,9 @@ async def reset_to_waiting(ctx, game):
     game["state"] = "WAITING"
     game["last_user"] = None
     game["last_move"] = None
+    game["wrong_attempts"] = {}
+    game["bot_turn"] = False
+    game["bot_word"] = None
 
     await ctx.send(
         "⏰ Màn trước đã kết thúc do quá 3 giờ "
@@ -302,9 +330,10 @@ async def help_noitu(ctx):
             "• Không được nối hai lượt liên tiếp.\n"
             "• Từ phải tồn tại trong từ điển.\n"
             "• Nối đúng → bot react ✅.\n"
-            "• Nối sai → bot báo lỗi.\n"
-            "• Im quá 3 giờ → màn kết thúc.\n"
-            "• Không còn từ hợp lệ → màn kết thúc."
+            "• Nối sai 3 lần → cảnh báo.\n"
+            "• Nối sai lần 4 → reset màn.\n"
+            "• Bot có 30% tỉ lệ nối tiếp theo.\n"
+            "• Im quá 3 giờ → màn kết thúc."
         ),
         inline=False
     )
@@ -312,7 +341,7 @@ async def help_noitu(ctx):
     embed.add_field(
         name="💡 Trợ giúp",
         value=(
-            "`!kho` — xin gợi ý.\n"
+            "`!kho` — xin gợi ý (5 lần/ngày).\n"
             "`!diem` — xem bảng điểm.\n"
             "`!dungnoitu` — dừng game."
         ),
@@ -329,9 +358,18 @@ async def help_noitu(ctx):
 @bot.command(name="kho")
 async def kho(ctx):
     channel_id = ctx.channel.id
+    user_id = ctx.author.id
 
     if channel_id not in games:
         await ctx.send("❌ Chưa có màn nối từ.")
+        return
+
+    hint_count = get_user_hint_count(user_id)
+    if hint_count >= DAILY_HINT_LIMIT:
+        await ctx.send(
+            f"❌ Bạn đã dùng hết {DAILY_HINT_LIMIT} lần gợi ý trong ngày hôm nay.\n"
+            f"Quay lại vào ngày mai!"
+        )
         return
 
     game = games[channel_id]
@@ -354,10 +392,14 @@ async def kho(ctx):
         game["last_move"] = None
         return
 
+    increment_user_hint_count(user_id)
+    remaining_hints = DAILY_HINT_LIMIT - get_user_hint_count(user_id)
+
     embed = discord.Embed(
         title="💡 Gợi ý",
         description=(
-            f"Từ cần nối: **`{game['required']}`**"
+            f"Từ cần nối: **`{game['required']}`**\n"
+            f"Còn lại: **{remaining_hints}/{DAILY_HINT_LIMIT}** lần gợi ý"
         ),
         color=discord.Color.gold()
     )
@@ -397,7 +439,7 @@ async def diem(ctx):
     lines = []
 
     for index, (user_id, score) in enumerate(ranking, 1):
-        member = ctx.guild.get_member(user_id)
+        member = ctx.guild.get_member(int(user_id))
         name = (
             member.display_name
             if member
@@ -428,6 +470,42 @@ async def dung_noitu(ctx):
     await ctx.send("🛑 Đã dừng game nối từ.")
 
 
+async def bot_play_turn(message, game):
+    valid_moves = await get_valid_moves(game, 10)
+    
+    if not valid_moves:
+        await message.channel.send(
+            f"🏁 Không còn từ hợp lệ để nối với "
+            f"`{game['required']}`.\n"
+            f"🎮 Màn này kết thúc."
+        )
+        game["state"] = "WAITING"
+        game["last_user"] = None
+        game["last_move"] = None
+        return False
+
+    bot_word = random.choice(valid_moves)
+    game["word"] = bot_word
+    game["used"].add(bot_word)
+    game["required"] = last_word(bot_word)
+    game["bot_turn"] = True
+    game["bot_word"] = bot_word
+    game["last_move"] = now()
+
+    embed = discord.Embed(
+        title="🤖 Bot nối từ",
+        description=(
+            f"**Bot nối:** `{bot_word}`\n\n"
+            f"👉 Bạn phải nối bằng:\n"
+            f"## {game['required']}"
+        ),
+        color=discord.Color.blue()
+    )
+
+    await message.channel.send(embed=embed)
+    return True
+
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -455,6 +533,88 @@ async def on_message(message):
             game["state"] = "WAITING"
             game["last_user"] = None
             game["last_move"] = None
+            game["wrong_attempts"] = {}
+            game["bot_turn"] = False
+
+    if game["bot_turn"]:
+        if not word.startswith(game["required"]):
+            user_id = str(message.author.id)
+            game["wrong_attempts"][user_id] = game["wrong_attempts"].get(user_id, 0) + 1
+
+            if game["wrong_attempts"][user_id] == 3:
+                await message.reply(
+                    f"⚠️ Bạn đã nối sai 3 lần. Một lần sai nữa sẽ reset màn chơi."
+                )
+                return
+            elif game["wrong_attempts"][user_id] >= 4:
+                await message.channel.send(
+                    f"🔄 Màn chơi đã reset do nối sai quá nhiều lần."
+                )
+                game["state"] = "WAITING"
+                game["last_user"] = None
+                game["last_move"] = None
+                game["wrong_attempts"] = {}
+                game["bot_turn"] = False
+                return
+
+            await message.reply(
+                f"❌ Không hợp lệ!\n"
+                f"👉 Cần nối bằng **`{game['required']}`**."
+            )
+            return
+
+        if count_words(word) < 2 or count_words(word) > 3:
+            await message.reply(
+                f"❌ Từ nối phải có **2-3 từ**.\n"
+                f"Ví dụ: `sinh viên`, `viên chức`"
+            )
+            return
+
+        if word in game["used"]:
+            await message.reply(
+                "♻️ Từ này đã được sử dụng trong màn này."
+            )
+            return
+
+        valid = await lookup_word(word)
+        if not valid:
+            await message.reply(
+                f"❌ `{word}` không được tìm thấy trong từ điển."
+            )
+            return
+
+        game["word"] = word
+        game["used"].add(word)
+        game["last_user"] = message.author.id
+        game["last_move"] = now()
+        game["state"] = "ACTIVE"
+
+        user_id = str(message.author.id)
+        game["scores"][user_id] = game["scores"].get(user_id, 0) + 1
+        game["wrong_attempts"][user_id] = 0
+        game["bot_turn"] = False
+
+        try:
+            await message.add_reaction("✅")
+        except Exception as e:
+            print("Cannot react:", e)
+
+        if random.random() < 0.3:
+            await bot_play_turn(message, game)
+        else:
+            game["required"] = last_word(word)
+            valid_moves = await get_valid_moves(game, 1)
+
+            if not valid_moves:
+                await message.channel.send(
+                    f"🏁 Không còn từ hợp lệ để nối với "
+                    f"`{game['required']}`.\n"
+                    f"🎮 Màn này kết thúc."
+                )
+                game["state"] = "WAITING"
+                game["last_user"] = None
+                game["last_move"] = None
+        return
 
     if (
         game["last_user"] is not None
@@ -476,6 +636,25 @@ async def on_message(message):
     required = game["required"]
 
     if not word.startswith(required):
+        user_id = str(message.author.id)
+        game["wrong_attempts"][user_id] = game["wrong_attempts"].get(user_id, 0) + 1
+
+        if game["wrong_attempts"][user_id] == 3:
+            await message.reply(
+                f"⚠️ Bạn đã nối sai 3 lần. Một lần sai nữa sẽ reset màn chơi."
+            )
+            return
+        elif game["wrong_attempts"][user_id] >= 4:
+            await message.channel.send(
+                f"🔄 Màn chơi đã reset do nối sai quá nhiều lần."
+            )
+            game["state"] = "WAITING"
+            game["last_user"] = None
+            game["last_move"] = None
+            game["wrong_attempts"] = {}
+            game["bot_turn"] = False
+            return
+
         await message.reply(
             f"❌ Không hợp lệ!\n"
             f"👉 Cần nối bằng **`{required}`**."
@@ -503,31 +682,33 @@ async def on_message(message):
     game["last_move"] = now()
     game["state"] = "ACTIVE"
 
-    user_id = message.author.id
+    user_id = str(message.author.id)
     game["scores"][user_id] = (
         game["scores"].get(user_id, 0) + 1
     )
+    game["wrong_attempts"][user_id] = 0
 
     try:
         await message.add_reaction("✅")
     except Exception as e:
         print("Cannot react:", e)
 
-    new_required = last_word(word)
-    game["required"] = new_required
+    if random.random() < 0.3:
+        await bot_play_turn(message, game)
+    else:
+        game["required"] = last_word(word)
+        valid_moves = await get_valid_moves(game, 1)
 
-    valid_moves = await get_valid_moves(game, 1)
+        if not valid_moves:
+            await message.channel.send(
+                f"🏁 Không còn từ hợp lệ để nối với "
+                f"`{game['required']}`.\n"
+                f"🎮 Màn này kết thúc."
+            )
 
-    if not valid_moves:
-        await message.channel.send(
-            f"🏁 Không còn từ hợp lệ để nối với "
-            f"`{new_required}`.\n"
-            f"🎮 Màn này kết thúc."
-        )
-
-        game["state"] = "WAITING"
-        game["last_user"] = None
-        game["last_move"] = None
+            game["state"] = "WAITING"
+            game["last_user"] = None
+            game["last_move"] = None
 
 
 @bot.event
