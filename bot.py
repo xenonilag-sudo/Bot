@@ -34,6 +34,10 @@ def normalize(text: str) -> str:
     return text
 
 
+def count_words(text: str) -> int:
+    return len(text.split())
+
+
 def last_word(text: str) -> str:
     parts = text.split()
     if not parts:
@@ -140,6 +144,9 @@ async def get_valid_moves(game, limit=5):
         if not word.startswith(game["required"]):
             continue
 
+        if count_words(word) < 2:
+            continue
+
         valid_check = await lookup_word(word)
         if not valid_check:
             continue
@@ -193,6 +200,13 @@ async def noitu(ctx, *, word=None):
 
     word = normalize(word)
 
+    if count_words(word) < 2:
+        await ctx.send(
+            f"❌ Từ bắt đầu phải có ít nhất 2 từ. "
+            f"Ví dụ: `học sinh`, `sinh viên`"
+        )
+        return
+
     valid = await lookup_word(word)
     if not valid:
         await ctx.send(
@@ -215,7 +229,7 @@ async def noitu(ctx, *, word=None):
     )
 
     embed.set_footer(
-        text="Hãy gửi một từ/cụm từ bắt đầu bằng từ trên."
+        text="Hãy gửi một từ/cụm từ (2-3 từ) bắt đầu bằng từ trên."
     )
 
     await ctx.send(embed=embed)
@@ -259,7 +273,8 @@ async def help_noitu(ctx):
         name="🔗 Cách chơi",
         value=(
             "Người chơi tiếp theo phải dùng từ bắt đầu "
-            "bằng **từ cuối** của lượt trước.\n\n"
+            "bằng **từ cuối** của lượt trước.\n"
+            "Mỗi từ nối phải có **2-3 từ**.\n\n"
             "Ví dụ:\n"
             "`học sinh` → `sinh viên` → `viên chức`"
         ),
@@ -269,13 +284,14 @@ async def help_noitu(ctx):
     embed.add_field(
         name="⚠️ Luật",
         value=(
+            "• Mỗi lượt phải nối từ có **2-3 từ**.\n"
             "• Không được dùng lại từ.\n"
             "• Không được nối hai lượt liên tiếp.\n"
             "• Từ phải tồn tại trong từ điển.\n"
             "• Nối đúng → bot react ✅.\n"
             "• Nối sai → bot báo lỗi.\n"
             "• Im quá 3 giờ → màn kết thúc.\n"
-            "• Màn mới không có người chơi sẽ chờ vô thời hạn."
+            "• Không còn từ hợp lệ → màn kết thúc."
         ),
         inline=False
     )
@@ -437,6 +453,13 @@ async def on_message(message):
         )
         return
 
+    if count_words(word) < 2 or count_words(word) > 3:
+        await message.reply(
+            f"❌ Từ nối phải có **2-3 từ**.\n"
+            f"Ví dụ: `sinh viên`, `viên chức`"
+        )
+        return
+
     required = game["required"]
 
     if not word.startswith(required):
@@ -462,7 +485,6 @@ async def on_message(message):
         return
 
     game["word"] = word
-    game["required"] = last_word(word)
     game["used"].add(word)
     game["last_user"] = message.author.id
     game["last_move"] = now()
@@ -478,12 +500,15 @@ async def on_message(message):
     except Exception as e:
         print("Cannot react:", e)
 
+    new_required = last_word(word)
+    game["required"] = new_required
+
     valid_moves = await get_valid_moves(game, 1)
 
     if not valid_moves:
         await message.channel.send(
             f"🏁 Không còn từ hợp lệ để nối với "
-            f"`{game['required']}`.\n"
+            f"`{new_required}`.\n"
             f"🎮 Màn này kết thúc."
         )
 
