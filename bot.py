@@ -559,7 +559,7 @@ async def bot_play_turn(message, game):
         await message.channel.send(
             f"🏁 Không còn từ hợp lệ để nối với "
             f"`{game['required']}`.\n"
-            f"🎮 Màn này k��t thúc."
+            f"🎮 Màn n��y kết thúc."
         )
         game["state"] = "WAITING"
         game["last_user"] = None
@@ -574,17 +574,10 @@ async def bot_play_turn(message, game):
     game["bot_word"] = bot_word
     game["last_move"] = now()
 
-    embed = discord.Embed(
-        title="🤖 Bot nối từ",
-        description=(
-            f"**Bot nối:** `{bot_word}`\n\n"
-            f"👉 Bạn phải nối bằng:\n"
-            f"## {game['required']}"
-        ),
-        color=discord.Color.blue()
+    await message.channel.send(
+        f"🤖 Bot nối: **{bot_word}**\n"
+        f"👉 Cần nối bằng: `{game['required']}`"
     )
-
-    await message.channel.send(embed=embed)
     return True
 
 
