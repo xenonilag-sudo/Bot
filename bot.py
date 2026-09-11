@@ -2,14 +2,14 @@ import os
 import time
 import random
 from typing import Optional
-
+from dotenv import load_dotenv
 import aiohttp
 import discord
 from discord.ext import commands
 
 from text import TEXT
 
-load_dotenv()
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 LOOKUP_API = "https://dict.minhqnd.com/api/v1/lookup"
