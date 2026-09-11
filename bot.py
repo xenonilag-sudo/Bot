@@ -5,7 +5,7 @@ import random
 import asyncio
 import aiohttp
 import discord
-import json
+import sqlite3
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -31,37 +31,107 @@ bot = commands.Bot(
 )
 
 games = {}
-db_file = "game_data.json"
+db_file = "game_data.db"
 
 
-def load_db():
-    if os.path.exists(db_file):
-        try:
-            with open(db_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-
-def save_db(data):
-    with open(db_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def init_db():
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hint_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            count INTEGER DEFAULT 1,
+            UNIQUE(user_id, date)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS game_channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id INTEGER UNIQUE NOT NULL,
+            game_active BOOLEAN DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS player_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            correct_moves INTEGER DEFAULT 0,
+            wrong_moves INTEGER DEFAULT 0,
+            hints_used INTEGER DEFAULT 0,
+            UNIQUE(user_id, channel_id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
 
 
 def get_user_hint_count(user_id):
-    db = load_db()
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
     today = datetime.now().strftime("%Y-%m-%d")
-    key = f"hint_{user_id}_{today}"
-    return db.get(key, 0)
+    
+    cursor.execute(
+        "SELECT count FROM hint_usage WHERE user_id = ? AND date = ?",
+        (user_id, today)
+    )
+    result = cursor.fetchone()
+    conn.close()
+    
+    return result[0] if result else 0
 
 
 def increment_user_hint_count(user_id):
-    db = load_db()
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
     today = datetime.now().strftime("%Y-%m-%d")
-    key = f"hint_{user_id}_{today}"
-    db[key] = db.get(key, 0) + 1
-    save_db(db)
+    
+    cursor.execute(
+        "INSERT INTO hint_usage (user_id, date, count) VALUES (?, ?, 1) "
+        "ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1",
+        (user_id, today)
+    )
+    
+    conn.commit()
+    conn.close()
+
+
+def register_game_channel(channel_id):
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "INSERT OR IGNORE INTO game_channels (channel_id, game_active) VALUES (?, 1)",
+        (channel_id,)
+    )
+    
+    conn.commit()
+    conn.close()
+
+
+def update_player_stats(user_id, channel_id, correct=0, wrong=0, hints=0):
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "INSERT INTO player_stats (user_id, channel_id, correct_moves, wrong_moves, hints_used) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id, channel_id) DO UPDATE SET "
+        "correct_moves = correct_moves + ?, "
+        "wrong_moves = wrong_moves + ?, "
+        "hints_used = hints_used + ?",
+        (user_id, channel_id, correct, wrong, hints, correct, wrong, hints)
+    )
+    
+    conn.commit()
+    conn.close()
 
 
 def normalize(text: str) -> str:
@@ -255,6 +325,8 @@ async def noitu(ctx, *, word=None):
 
     games[channel_id] = create_game(word)
     game = games[channel_id]
+    
+    register_game_channel(channel_id)
 
     embed = discord.Embed(
         title="🔗 NỐI TỪ — MÀN MỚI",
@@ -393,6 +465,7 @@ async def kho(ctx):
         return
 
     increment_user_hint_count(user_id)
+    update_player_stats(user_id, channel_id, hints=1)
     remaining_hints = DAILY_HINT_LIMIT - get_user_hint_count(user_id)
 
     embed = discord.Embed(
@@ -547,6 +620,7 @@ async def on_message(message):
                 )
                 return
             elif game["wrong_attempts"][user_id] >= 4:
+                update_player_stats(int(user_id), channel_id, wrong=1)
                 await message.channel.send(
                     f"🔄 Màn chơi đã reset do nối sai quá nhiều lần."
                 )
@@ -557,6 +631,7 @@ async def on_message(message):
                 game["bot_turn"] = False
                 return
 
+            update_player_stats(int(user_id), channel_id, wrong=1)
             await message.reply(
                 f"❌ Không hợp lệ!\n"
                 f"👉 Cần nối bằng **`{game['required']}`**."
@@ -593,6 +668,8 @@ async def on_message(message):
         game["scores"][user_id] = game["scores"].get(user_id, 0) + 1
         game["wrong_attempts"][user_id] = 0
         game["bot_turn"] = False
+
+        update_player_stats(int(user_id), channel_id, correct=1)
 
         try:
             await message.add_reaction("✅")
@@ -645,6 +722,7 @@ async def on_message(message):
             )
             return
         elif game["wrong_attempts"][user_id] >= 4:
+            update_player_stats(int(user_id), channel_id, wrong=1)
             await message.channel.send(
                 f"🔄 Màn chơi đã reset do nối sai quá nhiều lần."
             )
@@ -655,6 +733,7 @@ async def on_message(message):
             game["bot_turn"] = False
             return
 
+        update_player_stats(int(user_id), channel_id, wrong=1)
         await message.reply(
             f"❌ Không hợp lệ!\n"
             f"👉 Cần nối bằng **`{required}`**."
@@ -688,6 +767,8 @@ async def on_message(message):
     )
     game["wrong_attempts"][user_id] = 0
 
+    update_player_stats(int(user_id), channel_id, correct=1)
+
     try:
         await message.add_reaction("✅")
     except Exception as e:
@@ -713,6 +794,7 @@ async def on_message(message):
 
 @bot.event
 async def on_ready():
+    init_db()
     print(
         f"✅ Đăng nhập thành công: "
         f"{bot.user}"
