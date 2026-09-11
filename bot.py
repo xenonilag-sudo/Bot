@@ -291,7 +291,8 @@ def create_game(first_word):
 
 async def get_random_starting_word():
     # Chọn ngẫu nhiên một chữ cái để bắt đầu
-    random_char = random.choice('abcdefghijklmnopqrstuvwxyzáàảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ')
+    vietnamese_chars = 'abcdefghijklmnopqrstuvwxyzáàảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìí��ĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ'
+    random_char = random.choice(vietnamese_chars)
     
     for _ in range(5):
         suggestions = await suggest_words(random_char, 100)
@@ -666,7 +667,7 @@ async def on_message(message):
 
         if word in game["used"]:
             await message.reply(
-                "♻️ Từ này đã ��ược sử dụng trong màn này."
+                "♻️ Từ này đã được sử dụng trong màn này."
             )
             return
 
@@ -743,7 +744,7 @@ async def on_message(message):
 
         if game["wrong_attempts"][user_id] == 3:
             await message.reply(
-                f"⚠️ Bạn đã nối sai 3 lần. Một lần sai nữa sẽ reset màn chơi.{hint_text}"
+                f"⚠️ Bạn ��ã nối sai 3 lần. Một lần sai nữa sẽ reset màn chơi.{hint_text}"
             )
             return
         elif game["wrong_attempts"][user_id] >= 4:
