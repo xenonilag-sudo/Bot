@@ -165,7 +165,7 @@ def now():
 
 
 def is_timeout(game):
-    if game["state"] != "ACTIVE":
+    if game["state"] != "IDLE":
         return False
     if game["last_move"] is None:
         return False
