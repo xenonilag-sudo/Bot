@@ -290,8 +290,11 @@ def create_game(first_word):
 
 
 async def get_random_starting_word():
+    # Chọn ngẫu nhiên một chữ cái để bắt đầu
+    random_char = random.choice('abcdefghijklmnopqrstuvwxyzáàảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ')
+    
     for _ in range(5):
-        suggestions = await suggest_words("a", 100)
+        suggestions = await suggest_words(random_char, 100)
         if suggestions:
             random_word = random.choice(suggestions)
             if count_words(random_word) >= 2:
@@ -842,3 +845,4 @@ if not TOKEN:
     )
 
 bot.run(TOKEN)
+ 
